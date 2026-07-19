@@ -1,0 +1,52 @@
+name: Poll for large transfers
+
+on:
+  schedule:
+    # Every 10 minutes. GitHub's scheduler is best-effort and can lag
+    # during high load — treat this as "at least every ~10-15 min," not a
+    # hard guarantee.
+    - cron: "*/10 * * * *"
+  workflow_dispatch: {} # manual "Run workflow" button, useful for testing
+
+permissions:
+  contents: write # needed to commit the updated state file back
+
+concurrency:
+  group: watch-poll
+  cancel-in-progress: false # never cancel a run that might be mid-alert
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build
+        run: cargo build --release
+
+      - name: Run watcher
+        env:
+          RPC_HTTP_URL: ${{ secrets.RPC_HTTP_URL }}
+          WATCH_ADDRESS: ${{ secrets.WATCH_ADDRESS }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          SOL_THRESHOLD: ${{ vars.SOL_THRESHOLD || '100' }}
+          TOKEN_THRESHOLD: ${{ vars.TOKEN_THRESHOLD || '10000' }}
+        run: ./target/release/solana-transfer-watch
+
+      - name: Commit updated state
+        run: |
+          git config user.name "watch-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add state/last_seen_signature.json
+          git diff --staged --quiet || git commit -m "chore: update last seen signature [skip ci]"
+          git push
